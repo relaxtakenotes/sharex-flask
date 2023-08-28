@@ -1,0 +1,18 @@
+{
+    "Version": "14.1.0",
+    "DestinationType": "ImageUploader, TextUploader, FileUploader",
+    "RequestMethod": "POST",
+    "RequestURL": "%DOMAIN%/upload",
+    "Parameters": {
+        "name": "%name%",
+        "password": "%secret%",
+        "embed_enabled": "%embed_enabled%",
+        "embed_color": "%embed_color%",
+        "embed_description": "%embed_description%",
+        "embed_title": "%embed_title%"
+    },
+    "Body": "MultipartFormData",
+    "FileFormName": "content",
+    "URL": "{json:url}",
+    "DeletionURL": "{json:delete}"
+}

@@ -1,0 +1,4 @@
+generate_user_remote.cmd
+src/configs/main.json
+src/configs/uploads.bin
+src/files/*

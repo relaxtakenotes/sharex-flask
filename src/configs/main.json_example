@@ -1,0 +1,6 @@
+{
+    "authorization": {"...": "..."},
+    "allowed_filetypes": ["..."],
+    "domain": "https://...:...",
+    "webhook_url": "https://discord.com/api/webhooks/.../..."
+}
