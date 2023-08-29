@@ -2,11 +2,9 @@
 from flask import Flask as flask
 from flask import request, send_file
 from pydub import AudioSegment
-import ffmpeg
 
 # local/default
 import json
-import re
 import os
 import urllib.parse
 import secrets
@@ -14,7 +12,6 @@ import requests
 import subprocess
 import shlex
 import shutil
-import traceback
 import pickle
 
 CONFIG_PATH = "configs/main.json"
@@ -69,30 +66,47 @@ def get_size(fobj):
 
     try:
         pos = fobj.tell()
-        fobj.seek(0, 2)  #seek to end
+        fobj.seek(0, 2)
         size = fobj.tell()
-        fobj.seek(pos)  # back to original position
+        fobj.seek(pos)
         return size
     except (AttributeError, IOError):
         pass
 
-    # in-memory file object that doesn't support seeking or tell
-    return 0  #assume small enough
+    return 0
+
+def escape_html(htmlstring):
+    escapes = {'\"': '&quot;',
+               '\'': '&#39;',
+               '<': '&lt;',
+               '>': '&gt;'}
+
+    htmlstring = htmlstring.replace('&', '&amp;')
+    for seq, esc in escapes.items():
+        htmlstring = htmlstring.replace(seq, esc)
+    return htmlstring
+
+def is_directory_traversal(file_name):
+    current_directory = os.path.abspath(os.curdir)
+    requested_path = os.path.relpath(file_name, start=current_directory)
+    requested_path = os.path.abspath(requested_path)
+    common_prefix = os.path.commonprefix([requested_path, current_directory])
+    return common_prefix != current_directory
 
 def shell_exec(command):
     p = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
     return p[0].decode("utf-8", errors="ignore")
 
+# TODO: look into ways to exploit these and then fix it :-)
 def convert_to_mp4(mkv_file):
     name, ext = os.path.splitext(mkv_file)
     out_name = name + ".mp4"
-    ffmpeg.input(mkv_file).output(out_name).run()
+    shell_exec(f"ffmpeg -i \"{mkv_file}\" -codec copy \"{out_name}\" ")
     return out_name
 
 def convert_mp3_to_mp4(mp3_file):
     name, ext = os.path.splitext(mp3_file)
     out_name = name + ".mp4"
-    # TODO: look into ways to exploit this and then fix it :-)
     shell_exec(f"ffmpeg -f lavfi -i color=c=black:s=640x240:r=5 -i \"{mp3_file}\" -crf 0 -c:a copy -shortest \"{out_name}\"")
     return out_name
 
@@ -116,7 +130,19 @@ def get_upload(code):
     with open(UPLOADS_PATH, "rb") as f:
         uploads = pickle.load(f)
 
-    return uploads.get(code)    
+    return uploads.get(code)
+
+def delete_upload(code):
+    uploads = {}
+
+    with open(UPLOADS_PATH, "rb") as f:
+        uploads = pickle.load(f)
+
+    if uploads.get(code):
+        del uploads[code]
+
+    with open(UPLOADS_PATH, "wb") as f:
+        pickle.dump(uploads, f)
 
 @app.route('/', methods=['GET'])
 def index():
@@ -135,20 +161,8 @@ def delete(code, key):
 
     if key == upload.get("deletion_key"):
         webhook_log(f"```--- Upload Deleted ---\nUser: {upload.get('owner')}\nURL: {url}```")
-
         shutil.rmtree(f"{SAVE_DIR}/{code}/")
-
-        uploads = {}
-
-        with open(UPLOADS_PATH, "rb") as f:
-            uploads = pickle.load(f)
-
-        if uploads.get(code):
-            del uploads[code]
-
-        with open(UPLOADS_PATH, "wb") as f:
-            pickle.dump(uploads, f)
-
+        delete_upload(code)
         return "deleted"
 
     return "nope!"
@@ -175,7 +189,7 @@ def download(code):
     if upload.get("embed_enabled") == "false":
         return send_file(upload.get("save_path"), download_name=os.path.basename(upload.get("save_path")))
 
-    # todo: do it prettier. walls of text scare me
+    # TODO: do it prettier. walls of text scare me
     match upload.get("type"):
         case "audio":
             page = pages["audio_embed"]
@@ -263,113 +277,114 @@ def download_converted(code, extension):
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    try:
-        args = request.args
+    args = request.args
 
-        if config.get("authorization").get(args.get("name")) != args.get("password"):
-            return generate_response({"status": "invalid auth"}, status_code=400)
+    if config.get("authorization").get(args.get("name")) != args.get("password"):
+        return generate_response({"status": "invalid auth"}, status_code=400)
 
-        # get current uploads
-        uploads = {}
+    # get current uploads
+    with open(UPLOADS_PATH, "rb") as f:
+        uploads = pickle.load(f)
 
-        with open(UPLOADS_PATH, "rb") as f:
-            uploads = pickle.load(f)
+    # get file, name, extension, type, owner and deletion key
+    content = request.files["content"]
+    name, extension = os.path.splitext(os.path.basename(content.filename))
+    typee = FILETYPES.get(extension, "other")
+    owner = args.get("name")
+    deletion_key = secrets.token_urlsafe(64)
+    file_size = round(get_size(content) / (1024 ** 2), 2)
 
-        # get file, name, extension, type, owner and deletion key
-        content = request.files["content"]
-        name, extension = os.path.splitext(os.path.basename(content.filename))
-        typee = FILETYPES.get(extension, "other")
-        owner = args.get("name")
-        deletion_key = secrets.token_urlsafe(64)
-        file_size = str(round(get_size(content) / (1024 ** 2), 2)) + "MB"
+    # not sure if you can manipulate the filename that way. but i don't feel like testing it :)
+    if is_directory_traversal(content.filename):
+        # TODO: revoke access for the stinky person like this
+        return generate_response({"status": "nope!"}, status_code=400)
 
-        # reject if conditions are not met
-        allowed_filetypes = config.get("allowed_filetypes")
-        if len(allowed_filetypes) > 0 and extension not in allowed_filetypes:
-            return generate_response({"status": "extension not allowed"}, status_code=400)
+    # reject if certain conditions are not met
+    allowed_filetypes = config.get("allowed_filetypes")
+    if len(allowed_filetypes) > 0 and extension not in allowed_filetypes:
+        return generate_response({"status": "extension not allowed"}, status_code=400)
 
-        # todo: implement filesize checking
+    if file_size > config.get("max_filesize_mb"):
+        return generate_response({"status": "file too big"}, status_code=400)
 
-        # save in a free slot
+    # save in a free slot
+    code = secrets.token_urlsafe(6)
+    while uploads.get(code):
         code = secrets.token_urlsafe(6)
-        while uploads.get(code):
-            code = secrets.token_urlsafe(6)
-        save_directory = os.path.join(SAVE_DIR, code + "/")
-        os.mkdir(save_directory)
-        save_path = os.path.join(save_directory, content.filename.replace("/", "").replace("\\", ""))
-        content.save(save_path)
+    save_directory = os.path.join(SAVE_DIR, code + "/")
+    os.mkdir(save_directory)
+    save_path = os.path.join(save_directory, content.filename)
+    content.save(save_path)
 
-        # process custom embed parameters
-        def sanitize(inputt):
-            return inputt.replace("<", "").replace(">", "").replace("\"", "")
+    # process custom embed parameters
+    embed_enabled = args.get("embed_enabled", "false")
+    embed_color = args.get("embed_color", "000000")
+    embed_title = args.get("embed_title", "%filename%")
+    embed_description = args.get("embed_description", "")
 
-        embed_enabled = sanitize(args.get("embed_enabled", "false"))
-        embed_color = sanitize(args.get("embed_color", "000000"))
-        embed_title = sanitize(args.get("embed_title", "%filename%"))
-        embed_description = sanitize(args.get("embed_description", ""))
+    # convert if needed
+    converted = ""
+    if file_size < 100: # files bigger than 100mb should be processed locally on the uploaders machine, not on our poor weak dualcore vps for 1 dollar
+        if extension == ".mkv":
+            save_path = convert_to_mp4(save_path)
+        if typee == "audio" and embed_enabled == "true":
+            converted = convert_mp3_to_mp4(save_path)
 
-        # convert if needed
-        converted = ""
-        if round(os.path.getsize(save_path)*0.000001) < 100:
-            if extension == ".mkv":
-                save_path = convert_to_mp4(save_path)
-            if typee == "audio" and embed_enabled == "true":
-                converted = convert_mp3_to_mp4(save_path)
+    # get some file type specific data for embeds
+    thumbnail = ""
+    width, height = "", ""
+    string_duration = ""
+    if embed_enabled == "true":
+        if typee == "video":
+            thumbnail = get_thumbnail(save_path)
+            width, height = get_video_dimensions(save_path)
 
-        # get some file type specific data for embeds
-        thumbnail = ""
-        width, height = "", ""
-        string_duration = ""
-        if embed_enabled == "true":
-            if typee == "video":
-                thumbnail = get_thumbnail(save_path)
-                width, height = get_video_dimensions(save_path)
+        if typee == "audio":
+            thumbnail = get_thumbnail(converted)
+            width, height = get_video_dimensions(converted)
 
-            if typee == "audio":
-                thumbnail = get_thumbnail(converted)
-                width, height = get_video_dimensions(converted)
+            sound = AudioSegment.from_file(save_path)
+            sound.duration_seconds == (len(sound) / 1000.0)
+            minutes_duartion = str(int(sound.duration_seconds // 60))
+            seconds_duration = str(int(sound.duration_seconds % 60))
+            string_duration = minutes_duartion+':'+seconds_duration
 
-                sound = AudioSegment.from_file(save_path)
-                sound.duration_seconds == (len(sound) / 1000.0)
-                minutes_duartion = str(int(sound.duration_seconds // 60))
-                seconds_duration = str(int(sound.duration_seconds % 60))
-                string_duration = minutes_duartion+':'+seconds_duration
-        
-        # add our new upload to uploads.json
-        # i'm turning all of them into a string in case they turn into a different type. i dont want that because we're not serializing into json, but raw binary
-        uploads[code] = {
-            "name": str(name),
-            "extension": str(extension),
-            "save_path": str(save_path),
-            "owner": str(owner),
-            "deletion_key": str(deletion_key),
-            "type": str(typee),
-            "converted": str(converted),
-            "thumbnail": str(thumbnail),
-            "content_type": str(content.content_type),
-            "width": str(width),
-            "height": str(height),
-            "str_dur": str(string_duration),
-            "file_size": str(file_size),
-            "embed_enabled": str(embed_enabled),
-            "embed_color": str(embed_color),
-            "embed_title": str(embed_title),
-            "embed_description": str(embed_description)
-        }
+    # add our new upload to uploads.json
+    # i'm turning all of them into a string in case they turn into a different type. i dont want that because we're not serializing into json, but raw binary
+    uploads[code] = {
+        "name": str(name),
+        "extension": str(extension),
+        "save_path": str(save_path),
+        "owner": str(owner),
+        "deletion_key": str(deletion_key),
+        "type": str(typee),
+        "converted": str(converted),
+        "thumbnail": str(thumbnail),
+        "content_type": str(content.content_type),
+        "width": str(width),
+        "height": str(height),
+        "str_dur": str(string_duration),
+        "file_size": str(file_size),
+        "embed_enabled": str(embed_enabled),
+        "embed_color": str(embed_color),
+        "embed_title": str(embed_title),
+        "embed_description": str(embed_description)
+    }
 
-        with open(UPLOADS_PATH, "wb") as f:
-            pickle.dump(uploads, f)
+    for key, item in uploads[code].copy().items():
+        uploads[code][key] = escape_html(uploads[code][key])
 
-        # log it and send it to the requester
-        url = config["domain"] + "/" + code
-        delete_url = url + "/delete/" + deletion_key + "/"
-        data = {"url": url, "delete": delete_url}
+    with open(UPLOADS_PATH, "wb") as f:
+        pickle.dump(uploads, f)
 
-        webhook_log(f"{url} \n```--- New Upload ---\nUser: {owner}\nDeletion URL: {delete_url}\nFilename: {name}{extension}\nConverted: {bool(converted)}```")
+    # log it and send it to the requester
+    url = config["domain"] + "/" + code
+    delete_url = url + "/delete/" + deletion_key + "/"
+    data = {"url": url, "delete": delete_url}
 
-        return generate_response(data, status_code=200)
-    except Exception:
-        webhook_log(f"```{traceback.format_exc()}```")
+    webhook_log(f"{url} \n```--- New Upload ---\nUser: {owner}\nDeletion URL: {delete_url}\nFilename: {name}{extension}\nConverted: {bool(converted)}```")
+
+    return generate_response(data, status_code=200)
 
 if __name__ == "__main__":
     app.run(debug=True)

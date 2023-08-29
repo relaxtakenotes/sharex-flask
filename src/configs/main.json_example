@@ -1,6 +1,7 @@
 {
     "authorization": {"...": "..."},
     "allowed_filetypes": ["..."],
+    "max_filesize_mb": 100,
     "domain": "https://...:...",
     "webhook_url": "https://discord.com/api/webhooks/.../..."
 }
