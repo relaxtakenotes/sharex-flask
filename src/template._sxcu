@@ -2,7 +2,7 @@
     "Version": "14.1.0",
     "DestinationType": "ImageUploader, TextUploader, FileUploader",
     "RequestMethod": "POST",
-    "RequestURL": "%DOMAIN%/upload",
+    "RequestURL": "%DOMAIN%/api/upload",
     "Parameters": {
         "name": "%name%",
         "password": "%secret%",

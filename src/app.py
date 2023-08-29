@@ -275,7 +275,7 @@ def download_converted(code, extension):
     
     return send_file(upload.get("save_path"), download_name=os.path.basename(upload.get("save_path")))  
 
-@app.route('/upload', methods=['POST'])
+@app.route('/api/upload', methods=['POST'])
 def upload():
     args = request.args
 
@@ -293,16 +293,6 @@ def upload():
     owner = args.get("name")
     deletion_key = secrets.token_urlsafe(64)
     file_size = round(get_size(content) / (1024 ** 2), 2) # megabytes, MB
-
-    # not sure if you can manipulate the filename that way. but i don't feel like testing it :)
-    if is_directory_traversal(content.filename):
-        with open(CONFIG_PATH) as f:
-            _config = json.load(f)
-        del _config["authorization"][owner]
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(_config, f, indent=4)
-        webhook_log(f"```User tried to exploit the server.\nName: {owner}\nFilename: {content.filename}```")
-        return generate_response({"status": "nope!"}, status_code=400)
 
     # reject if certain conditions are not met
     allowed_filetypes = config.get("allowed_filetypes")
