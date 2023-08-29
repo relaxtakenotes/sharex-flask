@@ -139,6 +139,7 @@ def delete_upload(code):
         uploads = pickle.load(f)
 
     if uploads.get(code):
+        shutil.rmtree(f"{SAVE_DIR}/{code}/")
         del uploads[code]
 
     with open(UPLOADS_PATH, "wb") as f:
@@ -161,7 +162,6 @@ def delete(code, key):
 
     if key == upload.get("deletion_key"):
         webhook_log(f"```--- Upload Deleted ---\nUser: {upload.get('owner')}\nURL: {url}```")
-        shutil.rmtree(f"{SAVE_DIR}/{code}/")
         delete_upload(code)
         return "deleted"
 
@@ -183,7 +183,7 @@ def download(code):
         if extension:
             filename = os.path.basename(upload.get("save_path"))
         return (inputt.replace("%filename%", filename)
-                        .replace("%filesize%", upload.get("file_size"))
+                        .replace("%filesize%", upload.get("file_size") + "MB")
                         .replace("%username%", upload.get("owner")))
 
     if upload.get("embed_enabled") == "false":
@@ -292,11 +292,16 @@ def upload():
     typee = FILETYPES.get(extension, "other")
     owner = args.get("name")
     deletion_key = secrets.token_urlsafe(64)
-    file_size = round(get_size(content) / (1024 ** 2), 2)
+    file_size = round(get_size(content) / (1024 ** 2), 2) # megabytes, MB
 
     # not sure if you can manipulate the filename that way. but i don't feel like testing it :)
     if is_directory_traversal(content.filename):
-        # TODO: revoke access for the stinky person like this
+        with open(CONFIG_PATH) as f:
+            _config = json.load(f)
+        del _config["authorization"][owner]
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(_config, f, indent=4)
+        webhook_log(f"```User tried to exploit the server.\nName: {owner}\nFilename: {content.filename}```")
         return generate_response({"status": "nope!"}, status_code=400)
 
     # reject if certain conditions are not met
@@ -304,7 +309,7 @@ def upload():
     if len(allowed_filetypes) > 0 and extension not in allowed_filetypes:
         return generate_response({"status": "extension not allowed"}, status_code=400)
 
-    if file_size > config.get("max_filesize_mb"):
+    if config.get("max_filesize_mb") > 0 and file_size > config.get("max_filesize_mb"):
         return generate_response({"status": "file too big"}, status_code=400)
 
     # save in a free slot
