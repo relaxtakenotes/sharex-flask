@@ -367,6 +367,8 @@ def upload():
     }
 
     for key, item in uploads[code].copy().items():
+        if key == "save_path":
+            continue
         uploads[code][key] = escape_html(uploads[code][key])
 
     with open(UPLOADS_PATH, "wb") as f:
